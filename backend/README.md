@@ -48,6 +48,86 @@ JSON mode behavior:
 - By default, JSON mode is auto-disabled for OpenRouter-compatible calls to avoid provider/model incompatibilities.
 - You can override with `LLM_FORCE_JSON_MODE=true` or `LLM_FORCE_JSON_MODE=false`.
 
+## LLM Gateway Protocol (Phase 3)
+
+AI generation now has a Gateway foundation to standardize model output contracts.
+
+- Gateway entrypoint: `src/services/llmGateway/index.js`
+- Contract registry: `src/services/llmGateway/contracts/registry.js`
+- Initial contracts:
+  - `planner.daily.tasks.v1`
+  - `practice.nextset.v1`
+  - `tests.generate.v1`
+
+### Routing Policy Layer
+
+Contracts now declare a routing policy and the Gateway resolves execution config from policy + env overrides:
+
+- `fast` (latency-sensitive generation)
+- `balanced` (general purpose)
+- `quality` (higher-context generations)
+
+Optional env overrides:
+
+- `LLM_GATEWAY_ROUTE_FAST_MODEL`
+- `LLM_GATEWAY_ROUTE_BALANCED_MODEL`
+- `LLM_GATEWAY_ROUTE_QUALITY_MODEL`
+
+### Contract Lifecycle Governance
+
+Contracts now include metadata for platform governance:
+
+- `family`
+- `description`
+- `lifecycle` (`active` or `deprecated`, optional `supersededBy`)
+- `routing` policy
+
+Gateway can block deprecated contracts when `LLM_GATEWAY_ALLOW_DEPRECATED_CONTRACTS=false`.
+
+### Universal Envelope
+
+Gateway expects model output in this shared shape:
+
+- `outputType`
+- `schemaVersion`
+- `payload`
+- `meta` (optional)
+
+The Gateway validates the envelope and payload via Zod before returning data to controllers.
+
+### Unified Gateway Result
+
+Gateway returns a normalized object:
+
+- `ok`
+- `status`
+- `contract` (`contractKey`, `outputType`, `schemaVersion`)
+- `data` (validated payload)
+- `envelope` (validated full envelope)
+- `debug` (`error`, `rawOutput`, `model`, `providerBaseUrl`)
+
+### Registering a New AI Tool Contract
+
+1. Create a contract module in `src/services/llmGateway/contracts/` with:
+   - Versioned `contractKey`
+   - `outputType`
+   - `schemaVersion`
+   - Zod `payloadSchema`
+   - `buildPrompts(input)`
+2. Export the contract from `contracts/registry.js`.
+3. Call `executeGatewayRequest(...)` from the feature controller.
+4. Keep controller fallback behavior for reliability.
+
+Detailed onboarding playbook: `src/services/llmGateway/README.md`.
+
+### Health/Observability
+
+`GET /api/health` now exposes Gateway protocol diagnostics:
+
+- contract catalog with lifecycle metadata
+- routing model map by policy tier
+- reliability guardrails (`maxAttempts`, `repairEnabled`, deprecation policy)
+
 ## Scripts
 
 - `npm.cmd run dev` - Run with nodemon
