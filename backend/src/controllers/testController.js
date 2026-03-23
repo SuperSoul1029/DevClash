@@ -412,7 +412,6 @@ const generateExam = asyncHandler(async (req, res) => {
   let questions;
   let generationSource = "llm";
   let generationError = null;
-  let generationRawOutput = null;
   try {
     questions = await buildAiExamQuestions({
       topics,
@@ -421,10 +420,8 @@ const generateExam = asyncHandler(async (req, res) => {
     });
   } catch (_error) {
     generationError = String(_error?.message || "Unknown AI tests error").slice(0, 220);
-    generationRawOutput = String(_error?.llmRawOutput || "").slice(0, 1200) || null;
     logWarn("tests.ai.fallback", {
-      reason: generationError,
-      rawOutput: generationRawOutput
+      reason: generationError
     });
     questions = undefined;
   }
@@ -462,13 +459,11 @@ const generateExam = asyncHandler(async (req, res) => {
       generationSource === "fallback"
         ? {
             failed: true,
-            error: generationError || "AI exam generation failed and fallback was used",
-            rawOutput: generationRawOutput
+            error: generationError || "AI exam generation failed and fallback was used"
           }
         : {
             failed: false,
-            error: null,
-            rawOutput: null
+            error: null
           }
   });
 });
@@ -671,7 +666,7 @@ async function updateLedgerFromSubmittedAttempt(userId, exam, gradedResult) {
 
 const submitExamAttempt = asyncHandler(async (req, res) => {
   const userId = req.user._id;
-  const { attemptId, responses, elapsedSec } = req.body;
+  const { attemptId, responses, elapsedSec, proctoringLogs } = req.body;
 
   const attempt = await ExamAttempt.findOne({ _id: attemptId, userId, status: "in_progress" });
   if (!attempt) {
@@ -686,6 +681,16 @@ const submitExamAttempt = asyncHandler(async (req, res) => {
   attempt.responses = mergeResponses(attempt.responses, responses);
   if (Number.isFinite(elapsedSec)) {
     attempt.elapsedSec = Math.max(0, elapsedSec);
+  }
+  if (Array.isArray(proctoringLogs) && proctoringLogs.length > 0) {
+    attempt.proctoringLogs = [
+      ...(attempt.proctoringLogs || []),
+      ...proctoringLogs.map((entry) => ({
+        type: entry.type,
+        timestamp: entry.timestamp ? new Date(entry.timestamp) : new Date(),
+        details: entry.details || {}
+      }))
+    ];
   }
 
   const graded = gradeAttempt(exam, attempt.responses);

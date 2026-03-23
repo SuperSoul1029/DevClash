@@ -229,15 +229,12 @@ const getNextPracticeSet = asyncHandler(async (req, res) => {
   let questions;
   let generationSource = "llm";
   let generationError = null;
-  let generationRawOutput = null;
   try {
     questions = await buildAiPracticeQuestions({ selectedTopics, count });
   } catch (_error) {
     generationError = String(_error?.message || "Unknown AI practice error").slice(0, 220);
-    generationRawOutput = String(_error?.llmRawOutput || "").slice(0, 1200) || null;
     logWarn("practice.ai.fallback", {
-      reason: generationError,
-      rawOutput: generationRawOutput
+      reason: generationError
     });
     questions = undefined;
   }
@@ -256,13 +253,11 @@ const getNextPracticeSet = asyncHandler(async (req, res) => {
         generationSource === "fallback"
           ? {
               failed: true,
-              error: generationError || "AI practice generation failed and fallback was used",
-              rawOutput: generationRawOutput
+              error: generationError || "AI practice generation failed and fallback was used"
             }
           : {
               failed: false,
-              error: null,
-              rawOutput: null
+              error: null
             },
       weakTopics: selectedTopics.map((entry) => ({
         topicId: entry.topic._id,

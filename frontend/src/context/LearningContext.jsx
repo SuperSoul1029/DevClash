@@ -27,6 +27,12 @@ const CONFIDENCE_TO_VALUE = {
 
 const LearningContext = createContext(null)
 
+function getFallbackDebugMessage(generationDebug, defaultMessage) {
+  if (!generationDebug?.failed) return null
+  const raw = String(generationDebug?.error || '').trim()
+  return raw || defaultMessage
+}
+
 function formatDateKey(date) {
   return new Date(date).toISOString().slice(0, 10)
 }
@@ -201,8 +207,26 @@ function mapPracticeQuestion(question) {
 function mapYoutubeOutput(result, jobId) {
   if (!result) return null
 
+  const isLegacyDeterministicTemplate =
+    !result.fallbackUsed &&
+    Array.isArray(result.keyConcepts) &&
+    result.keyConcepts.includes('Core principle') &&
+    result.keyConcepts.includes('Common trap')
+
+  const fallbackActive = Boolean(result.fallbackUsed || isLegacyDeterministicTemplate)
+
+  const fallbackReason =
+    fallbackActive &&
+    (result.fallbackReason ||
+      (isLegacyDeterministicTemplate
+        ? 'Legacy deterministic template output detected (saved before fallback flags were fixed).'
+        : null) ||
+      (result.transcriptQuality === 'low'
+        ? 'Transcript quality was too low for reliable extraction.'
+        : result.summary || 'Backend returned deterministic fallback mode.'))
+
   return {
-    mode: result.fallbackUsed ? 'demo-fallback' : 'transcript',
+    mode: fallbackActive ? 'demo-fallback' : 'transcript',
     generatedAt: new Date().toISOString(),
     title: 'YouTube Explainer Result',
     overview: result.overview,
@@ -214,6 +238,7 @@ function mapYoutubeOutput(result, jobId) {
       why: card.answer || 'Recommended for revision reinforcement.',
       prompt: card.prompt,
     })),
+    fallbackReason: fallbackReason || null,
   }
 }
 
@@ -272,6 +297,7 @@ function LearningProvider({ children }) {
     planner: null,
     practice: null,
     tests: null,
+    youtube: null,
   })
 
   const refreshPlannerAndOverview = useCallback(async () => {
@@ -282,10 +308,10 @@ function LearningProvider({ children }) {
 
     setAiDebug((current) => ({
       ...current,
-      planner:
-        planPayload?.plan?.generationDebug?.failed && planPayload?.plan?.generationDebug?.error
-          ? planPayload.plan.generationDebug.error
-          : null,
+      planner: getFallbackDebugMessage(
+        planPayload?.plan?.generationDebug,
+        'Planner fallback was used because AI generation failed.'
+      ),
     }))
 
     const mappedTasks = (planPayload.plan?.tasks || []).map(mapTask)
@@ -316,8 +342,8 @@ function LearningProvider({ children }) {
   }, [])
 
   const refreshSubjectProgress = useCallback(async () => {
-    const payload = await apiRequest('/api/progress/subjects')
-    setSubjectProgress((payload.subjects || []).map(mapSubjectProgress))
+    const payload = await apiRequest('/api/progress/ledger')
+    setSubjectProgress((payload.ledger?.subjects || []).map(mapSubjectProgress))
   }, [])
 
   const refreshGeneratedExams = useCallback(async () => {
@@ -415,10 +441,10 @@ function LearningProvider({ children }) {
 
     setAiDebug((current) => ({
       ...current,
-      tests:
-        payload?.generationDebug?.failed && payload?.generationDebug?.error
-          ? payload.generationDebug.error
-          : null,
+      tests: getFallbackDebugMessage(
+        payload?.generationDebug,
+        'Test generation fallback was used because AI generation failed.'
+      ),
     }))
 
     const mappedExam = mapExam(payload.exam)
@@ -569,6 +595,7 @@ function LearningProvider({ children }) {
     const finalTime = snapshot.timeByQuestion || active.timeByQuestion
     const finalTimeLeft =
       typeof snapshot.timeLeftSec === 'number' ? Math.max(0, snapshot.timeLeftSec) : active.timeLeftSec
+    const proctoringLogs = Array.isArray(snapshot.proctoringLogs) ? snapshot.proctoringLogs : []
 
     const elapsedSec = Math.max(0, active.totalDurationSec - finalTimeLeft)
 
@@ -588,6 +615,7 @@ function LearningProvider({ children }) {
         attemptId,
         elapsedSec,
         responses: responseList,
+        proctoringLogs,
       },
     })
 
@@ -655,10 +683,10 @@ function LearningProvider({ children }) {
 
     setAiDebug((current) => ({
       ...current,
-      practice:
-        payload?.set?.generationDebug?.failed && payload?.set?.generationDebug?.error
-          ? payload.set.generationDebug.error
-          : null,
+      practice: getFallbackDebugMessage(
+        payload?.set?.generationDebug,
+        'Practice generation fallback was used because AI generation failed.'
+      ),
     }))
 
     const nextSet = payload.set
@@ -693,10 +721,10 @@ function LearningProvider({ children }) {
 
     setAiDebug((current) => ({
       ...current,
-      practice:
-        payload?.set?.generationDebug?.failed && payload?.set?.generationDebug?.error
-          ? payload.set.generationDebug.error
-          : null,
+      practice: getFallbackDebugMessage(
+        payload?.set?.generationDebug,
+        'Practice generation fallback was used because AI generation failed.'
+      ),
     }))
 
     const nextSet = payload.set
@@ -758,6 +786,13 @@ function LearningProvider({ children }) {
 
     const mapped = mapYoutubeJob(payload.job)
 
+    setAiDebug((current) => ({
+      ...current,
+      youtube: mapped.usedFallback
+        ? mapped.output?.fallbackReason || 'YouTube explainer fallback was used.'
+        : null,
+    }))
+
     setYoutubeExplainer((current) => ({
       jobs: [mapped, ...current.jobs.filter((job) => job.id !== mapped.id)],
       activeJobId: mapped.id,
@@ -771,6 +806,13 @@ function LearningProvider({ children }) {
   const resolveYoutubeJob = async (jobId) => {
     const payload = await apiRequest(`/api/media/youtube/explain/${jobId}`)
     const mapped = mapYoutubeJob(payload.job)
+
+    setAiDebug((current) => ({
+      ...current,
+      youtube: mapped.usedFallback
+        ? mapped.output?.fallbackReason || 'YouTube explainer fallback was used.'
+        : null,
+    }))
 
     setYoutubeExplainer((current) => ({
       ...current,

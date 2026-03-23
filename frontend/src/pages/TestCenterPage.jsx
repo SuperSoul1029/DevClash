@@ -1,9 +1,12 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import Card from '../components/ui/Card.jsx'
 import Chip from '../components/ui/Chip.jsx'
 import Badge from '../components/ui/Badge.jsx'
 import DataTable from '../components/ui/DataTable.jsx'
 import Button from '../components/ui/Button.jsx'
+import Modal from '../components/ui/Modal.jsx'
+import * as tf from '@tensorflow/tfjs'
+import * as blazeface from '@tensorflow-models/blazeface'
 import { useLearning } from '../context/LearningContext.jsx'
 
 function formatDateTime(isoDate) {
@@ -43,6 +46,57 @@ function statusBadge(status) {
 
 function clamp(value, min, max) {
   return Math.max(min, Math.min(max, value))
+}
+
+const PROCTORING_INTERVAL_MS = 1000
+const LOOK_AWAY_THRESHOLD_MS = 3000
+const PROCTORING_LOG_COOLDOWN_MS = 8000
+let blazeFaceDetectorPromise = null
+
+async function createFaceDetector() {
+  if (typeof window === 'undefined' || !('FaceDetector' in window)) {
+    if (!blazeFaceDetectorPromise) {
+      blazeFaceDetectorPromise = (async () => {
+        await tf.ready()
+
+        const model = await blazeface.load()
+        return {
+          mode: 'blazeface',
+          detect: async (videoElement) => {
+            const predictions = await model.estimateFaces(videoElement, false)
+            return predictions.map((face) => {
+              const [x1, y1] = face.topLeft
+              const [x2, y2] = face.bottomRight
+              return {
+                boundingBox: {
+                  x: x1,
+                  y: y1,
+                  width: x2 - x1,
+                  height: y2 - y1,
+                },
+              }
+            })
+          },
+        }
+      })().catch(() => null)
+    }
+
+    return blazeFaceDetectorPromise
+  }
+
+  try {
+    const nativeDetector = new window.FaceDetector({ fastMode: true, maxDetectedFaces: 4 })
+    return {
+      mode: 'face_detector',
+      detect: (videoElement) => nativeDetector.detect(videoElement),
+    }
+  } catch {
+    return null
+  }
+}
+
+function nowIso() {
+  return new Date().toISOString()
 }
 
 const EXAM_COLUMNS = [
@@ -99,6 +153,200 @@ function TestCenterPage() {
     }
   })
   const [activeIndex, setActiveIndex] = useState(0)
+  const [proctoringPermission, setProctoringPermission] = useState('pending')
+  const [multipleFaceAlert, setMultipleFaceAlert] = useState({
+    open: false,
+    faceCount: 0,
+    timestamp: null,
+  })
+  const activeAttemptId = activeAttempt?.id || null
+  const activeAttemptIdRef = useRef(activeAttemptId)
+  const proctoringLogsRef = useRef([])
+  const proctoringRuntimeRef = useRef({
+    stream: null,
+    video: null,
+    detector: null,
+    intervalId: null,
+    lookAwayStartedAt: null,
+    lastLookAwayLoggedAt: 0,
+    lastMultipleFaceLoggedAt: 0,
+    detectionUnavailableLogged: false,
+  })
+
+  const appendProctoringLog = useCallback((type, details = {}) => {
+    proctoringLogsRef.current = [
+      ...proctoringLogsRef.current,
+      {
+        attemptId: activeAttemptIdRef.current,
+        type,
+        timestamp: nowIso(),
+        details,
+      },
+    ]
+  }, [])
+
+  const stopProctoring = useCallback((reason = null) => {
+    const runtime = proctoringRuntimeRef.current
+    if (runtime.intervalId) {
+      window.clearInterval(runtime.intervalId)
+      runtime.intervalId = null
+    }
+
+    if (runtime.stream) {
+      runtime.stream.getTracks().forEach((track) => track.stop())
+      runtime.stream = null
+    }
+
+    if (runtime.video) {
+      runtime.video.pause()
+      runtime.video.srcObject = null
+      runtime.video = null
+    }
+
+    runtime.detector = null
+    runtime.lookAwayStartedAt = null
+    runtime.lastLookAwayLoggedAt = 0
+    runtime.lastMultipleFaceLoggedAt = 0
+    runtime.detectionUnavailableLogged = false
+
+    if (reason && activeAttemptIdRef.current) {
+      appendProctoringLog('proctoring_stopped', { reason })
+    }
+  }, [appendProctoringLog])
+
+  const startProctoring = async () => {
+    if (!activeAttempt) return
+
+    if (!navigator.mediaDevices?.getUserMedia) {
+      setProctoringPermission('unsupported')
+      appendProctoringLog('proctoring_not_supported', { reason: 'camera_api_unavailable' })
+      return
+    }
+
+    setProctoringPermission('requesting')
+    stopProctoring()
+
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'user' }, audio: false })
+
+      const video = document.createElement('video')
+      video.playsInline = true
+      video.muted = true
+      video.srcObject = stream
+      await video.play()
+
+      const detector = await createFaceDetector()
+      const runtime = proctoringRuntimeRef.current
+      runtime.stream = stream
+      runtime.video = video
+      runtime.detector = detector
+
+      appendProctoringLog('proctoring_started', {
+        detector: detector?.mode || 'none',
+      })
+
+      const intervalId = window.setInterval(async () => {
+        if (!runtime.video) return
+
+        if (!runtime.detector) {
+          if (!runtime.detectionUnavailableLogged) {
+            appendProctoringLog('proctoring_detection_unavailable', {
+              reason: 'face_detector_not_supported',
+            })
+            runtime.detectionUnavailableLogged = true
+          }
+          return
+        }
+
+        try {
+          const faces = await runtime.detector.detect(runtime.video)
+          const currentTime = Date.now()
+
+          if (faces.length > 1 && currentTime - runtime.lastMultipleFaceLoggedAt >= PROCTORING_LOG_COOLDOWN_MS) {
+            appendProctoringLog('second_face_detected', {
+              faceCount: faces.length,
+            })
+            setMultipleFaceAlert({
+              open: true,
+              faceCount: faces.length,
+              timestamp: nowIso(),
+            })
+            runtime.lastMultipleFaceLoggedAt = currentTime
+          }
+
+          const primaryFace = faces[0]
+          let lookingAway = !primaryFace
+
+          if (primaryFace?.boundingBox && runtime.video.videoWidth && runtime.video.videoHeight) {
+            const centerX = primaryFace.boundingBox.x + primaryFace.boundingBox.width / 2
+            const centerRatio = centerX / runtime.video.videoWidth
+            if (centerRatio < 0.2 || centerRatio > 0.8) {
+              lookingAway = true
+            }
+          }
+
+          if (lookingAway) {
+            if (!runtime.lookAwayStartedAt) {
+              runtime.lookAwayStartedAt = currentTime
+            }
+
+            const lookAwayMs = currentTime - runtime.lookAwayStartedAt
+            if (lookAwayMs >= LOOK_AWAY_THRESHOLD_MS && currentTime - runtime.lastLookAwayLoggedAt >= PROCTORING_LOG_COOLDOWN_MS) {
+              appendProctoringLog('look_away_over_3s', {
+                durationMs: lookAwayMs,
+              })
+              runtime.lastLookAwayLoggedAt = currentTime
+            }
+          } else {
+            runtime.lookAwayStartedAt = null
+          }
+        } catch (error) {
+          appendProctoringLog('proctoring_detection_error', {
+            message: error?.message || 'Detection failed',
+          })
+        }
+      }, PROCTORING_INTERVAL_MS)
+
+      runtime.intervalId = intervalId
+      setProctoringPermission('granted')
+    } catch (error) {
+      const denied = error?.name === 'NotAllowedError' || error?.name === 'PermissionDeniedError'
+      setProctoringPermission(denied ? 'denied' : 'error')
+      appendProctoringLog('proctoring_permission_failed', {
+        denied,
+        message: error?.message || 'Camera permission failed',
+      })
+      stopProctoring()
+    }
+  }
+
+  useEffect(() => {
+    activeAttemptIdRef.current = activeAttemptId
+  }, [activeAttemptId])
+
+  useEffect(() => {
+    if (!activeAttemptId) {
+      stopProctoring('attempt_not_running')
+      setProctoringPermission('pending')
+      proctoringLogsRef.current = []
+      setMultipleFaceAlert({ open: false, faceCount: 0, timestamp: null })
+      return
+    }
+
+    setProctoringPermission('pending')
+    proctoringLogsRef.current = []
+    setMultipleFaceAlert({ open: false, faceCount: 0, timestamp: null })
+
+    return () => {
+      stopProctoring('attempt_changed')
+    }
+  }, [activeAttemptId, stopProctoring])
+
+  useEffect(() => {
+    return () => {
+      stopProctoring('workspace_unmounted')
+    }
+  }, [stopProctoring])
 
   useEffect(() => {
     if (!attemptState || !activeAttempt) return
@@ -237,11 +485,15 @@ function TestCenterPage() {
   const submitCurrentAttempt = async () => {
     if (!attemptState || !activeAttempt) return
 
+    const proctoringLogs = [...proctoringLogsRef.current]
+    stopProctoring('attempt_submitted')
+
     const submission = await submitExamAttempt(attemptState.id, {
       responses: attemptState.responses,
       confidenceByQuestion: attemptState.confidenceByQuestion,
       timeByQuestion: attemptState.timeByQuestion,
       timeLeftSec: attemptState.timeLeftSec,
+      proctoringLogs,
     })
 
     if (submission) {
@@ -257,6 +509,25 @@ function TestCenterPage() {
 
   return (
     <div className="page-grid">
+      <Modal
+        open={multipleFaceAlert.open && Boolean(activeAttemptId)}
+        title="Multiple Face Detected"
+        onClose={() =>
+          setMultipleFaceAlert((current) => ({
+            ...current,
+            open: false,
+          }))
+        }
+      >
+        <p className="muted-copy">
+          Multiple face detected during test attempt.
+          {multipleFaceAlert.faceCount > 0 ? ` Faces detected: ${multipleFaceAlert.faceCount}.` : ''}
+        </p>
+        {multipleFaceAlert.timestamp ? (
+          <p className="muted-copy">Detected at: {formatDateTime(multipleFaceAlert.timestamp)}</p>
+        ) : null}
+      </Modal>
+
       <section className="hero-panel">
         <p className="eyebrow">Test Center</p>
         <h1>Adaptive Test Generation and Exam Lifecycle</h1>
@@ -537,6 +808,34 @@ function TestCenterPage() {
           <p className="empty-copy">No active test session yet.</p>
         ) : (
           <div className="page-grid">
+            {proctoringPermission !== 'granted' ? (
+              <Card
+                title="Proctoring Permission"
+                subtitle="Camera access is required before gaze checks start. Video is processed locally and not shown on screen."
+              >
+                <div className="inline-actions">
+                  <Button
+                    variant="ghost"
+                    onClick={startProctoring}
+                    disabled={proctoringPermission === 'requesting'}
+                  >
+                    {proctoringPermission === 'requesting'
+                      ? 'Requesting Permission...'
+                      : 'Allow Camera Proctoring'}
+                  </Button>
+                </div>
+                {proctoringPermission === 'denied' ? (
+                  <p className="form-error">Camera permission was denied. Allow access to enable gaze checks.</p>
+                ) : null}
+                {proctoringPermission === 'unsupported' ? (
+                  <p className="form-error">This browser does not support required camera APIs for proctoring.</p>
+                ) : null}
+                {proctoringPermission === 'error' ? (
+                  <p className="form-error">Unable to start proctoring. Try granting camera access again.</p>
+                ) : null}
+              </Card>
+            ) : null}
+
             <div className="chip-row">
               <Chip tone="brand">Timer: {formatTimer(attemptState.timeLeftSec)}</Chip>
               <Chip tone="neutral">Answered: {answeredCount}/{totalQuestions}</Chip>

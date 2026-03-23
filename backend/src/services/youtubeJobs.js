@@ -25,7 +25,7 @@ async function processYoutubeExplainJob(payload) {
   try {
     await VideoJob.findByIdAndUpdate(jobId, { progress: 50 });
 
-    const result = generateYoutubeExplanation(started.sourceUrl);
+    const result = await generateYoutubeExplanation(started.sourceUrl);
 
     await VideoJob.findByIdAndUpdate(jobId, {
       status: "completed",

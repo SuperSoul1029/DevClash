@@ -50,6 +50,7 @@ function YouTubeExplainerPage() {
     setYoutubeActiveJob,
     resolveYoutubeJob,
     retryYoutubeJob,
+    aiDebug,
   } = useLearning()
 
   const [videoUrl, setVideoUrl] = useState('')
@@ -127,6 +128,7 @@ function YouTubeExplainerPage() {
           Drop a YouTube link to generate a plain-English overview, concise but detailed
           bullets, key concepts, and revision cards with resilient fallback behavior.
         </p>
+        {aiDebug?.youtube ? <p className="debug-error-text" style={{ color: 'red', fontWeight: 'bold', marginTop: '1rem' }}>YouTube AI fallback: {aiDebug.youtube}</p> : null}
       </section>
 
       <section className="split-grid">
@@ -193,7 +195,10 @@ function YouTubeExplainerPage() {
 
           {activeJob?.status === 'failed' ? (
             <div className="youtube-status-panel youtube-status-panel--failed">
-              <p className="form-error">{activeJob.errorMessage ?? 'Processing failed.'}</p>
+              <div style={{ padding: '1rem', border: '1px solid red', backgroundColor: '#ffe6e6', borderRadius: '4px', marginBottom: '1rem' }}>
+                <p style={{ color: 'red', fontWeight: 'bold', margin: '0' }}>DEBUG ERROR REASON:</p>
+                <p style={{ color: '#b30000', margin: '0.25rem 0 0 0' }}>{activeJob.errorMessage ?? 'Processing failed.'}</p>
+              </div>
               <div className="inline-actions">
                 <Button onClick={handleRetry}>Retry Processing</Button>
                 <Chip tone="alert">Attempt {activeJob.attemptCount ?? 1}</Chip>
@@ -219,6 +224,12 @@ function YouTubeExplainerPage() {
                 }
               >
                 <p>{output.overview}</p>
+                {output.mode === 'demo-fallback' && output.fallbackReason ? (
+                  <div style={{ padding: '1rem', border: '1px solid red', backgroundColor: '#ffe6e6', borderRadius: '4px', marginTop: '1rem' }}>
+                    <p style={{ color: 'red', fontWeight: 'bold', margin: '0' }}>DEBUG FALLBACK REASON:</p>
+                    <p style={{ color: '#b30000', margin: '0.25rem 0 0 0' }}>{output.fallbackReason}</p>
+                  </div>
+                ) : null}
               </Card>
 
               <Card title="Concise Detailed Bullets" subtitle="Judge-friendly walkthrough points">

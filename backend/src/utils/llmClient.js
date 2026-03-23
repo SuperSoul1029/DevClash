@@ -26,158 +26,28 @@ function safeJsonParse(text) {
   }
 }
 
-function truncateText(value, maxLength = 1200) {
-  const text = String(value || "").trim();
-  if (!text) {
+function extractJsonString(content) {
+  if (typeof content !== "string") {
     return "";
   }
 
-  return text.length > maxLength ? `${text.slice(0, maxLength)}...` : text;
-}
-
-function withRawOutput(error, rawOutput) {
-  if (rawOutput) {
-    error.llmRawOutput = truncateText(rawOutput);
-  }
-  return error;
-}
-
-function contentToText(content) {
-  if (typeof content === "string") {
-    return content;
+  const trimmed = content.trim();
+  if (trimmed.startsWith("{") || trimmed.startsWith("[")) {
+    return trimmed;
   }
 
-  if (Array.isArray(content)) {
-    return content
-      .map((part) => {
-        if (typeof part === "string") {
-          return part;
-        }
-        if (part && typeof part.text === "string") {
-          return part.text;
-        }
-        if (part && typeof part.content === "string") {
-          return part.content;
-        }
-        if (part && typeof part.output_text === "string") {
-          return part.output_text;
-        }
-        return "";
-      })
-      .filter(Boolean)
-      .join("\n");
-  }
-
-  if (content && typeof content === "object") {
-    if (typeof content.text === "string") {
-      return content.text;
-    }
-    if (typeof content.content === "string") {
-      return content.content;
-    }
-    return JSON.stringify(content);
-  }
-
-  return "";
-}
-
-function findBalancedJsonSlices(text) {
-  const slices = [];
-  const stack = [];
-  let start = -1;
-  let inString = false;
-  let escape = false;
-
-  for (let index = 0; index < text.length; index += 1) {
-    const ch = text[index];
-
-    if (escape) {
-      escape = false;
-      continue;
-    }
-
-    if (ch === "\\") {
-      escape = true;
-      continue;
-    }
-
-    if (ch === '"') {
-      inString = !inString;
-      continue;
-    }
-
-    if (inString) {
-      continue;
-    }
-
-    if (ch === "{" || ch === "[") {
-      if (stack.length === 0) {
-        start = index;
-      }
-      stack.push(ch === "{" ? "}" : "]");
-      continue;
-    }
-
-    if (stack.length > 0 && ch === stack[stack.length - 1]) {
-      stack.pop();
-      if (stack.length === 0 && start >= 0) {
-        slices.push(text.slice(start, index + 1));
-        start = -1;
-      }
-    }
-  }
-
-  return slices;
-}
-
-function extractJsonCandidates(content) {
-  const text = contentToText(content).trim();
-  if (!text) {
-    return [];
-  }
-
-  const candidates = [];
-  const seen = new Set();
-
-  const pushCandidate = (value) => {
-    if (!value) {
-      return;
-    }
-
-    const candidate = String(value).trim();
-    if (!candidate || seen.has(candidate)) {
-      return;
-    }
-
-    seen.add(candidate);
-    candidates.push(candidate);
-  };
-
-  if (text.startsWith("{") || text.startsWith("[")) {
-    pushCandidate(text);
-  }
-
-  const fencedMatch = text.match(/```(?:json)?\s*([\s\S]*?)```/i);
+  const fencedMatch = trimmed.match(/```(?:json)?\s*([\s\S]*?)```/i);
   if (fencedMatch && fencedMatch[1]) {
-    pushCandidate(fencedMatch[1]);
+    return fencedMatch[1].trim();
   }
 
-  const slices = findBalancedJsonSlices(text).sort((left, right) => right.length - left.length);
-  slices.forEach(pushCandidate);
-
-  pushCandidate(text);
-  return candidates;
-}
-
-function extractJsonString(content) {
-  const candidates = extractJsonCandidates(content);
-  for (const candidate of candidates) {
-    if (safeJsonParse(candidate)) {
-      return candidate;
-    }
+  const firstBrace = trimmed.indexOf("{");
+  const lastBrace = trimmed.lastIndexOf("}");
+  if (firstBrace >= 0 && lastBrace > firstBrace) {
+    return trimmed.slice(firstBrace, lastBrace + 1);
   }
 
-  return contentToText(content).trim();
+  return trimmed;
 }
 
 async function requestLlmJson({ systemPrompt, userPrompt, temperature = 0.2, maxTokens = 1600 }) {
@@ -239,31 +109,16 @@ async function requestLlmJson({ systemPrompt, userPrompt, temperature = 0.2, max
 
   if (!response.ok) {
     const details = await response.text();
-    throw withRawOutput(
-      new Error(`LLM request failed (${response.status}): ${details.slice(0, 500)}`),
-      details
-    );
+    throw new Error(`LLM request failed (${response.status}): ${details.slice(0, 500)}`);
   }
 
   const data = await response.json();
-  const message = data?.choices?.[0]?.message;
-  const content = message?.content ?? message?.tool_calls?.[0]?.function?.arguments;
-
-  let parsed;
-  if (content && typeof content === "object" && !Array.isArray(content)) {
-    parsed = content;
-  } else {
-    const jsonText = extractJsonString(content);
-    parsed = safeJsonParse(jsonText);
-  }
+  const content = data?.choices?.[0]?.message?.content;
+  const jsonText = extractJsonString(content);
+  const parsed = safeJsonParse(jsonText);
 
   if (!parsed || typeof parsed !== "object") {
-    const contentSnippet = contentToText(content);
-    const responseSnippet = truncateText(JSON.stringify(message || data || {}));
-    throw withRawOutput(
-      new Error("LLM did not return valid JSON content"),
-      contentSnippet || responseSnippet
-    );
+    throw new Error("LLM did not return valid JSON content");
   }
 
   return parsed;
@@ -281,23 +136,7 @@ async function getStructuredLlmOutput({
   }
 
   const raw = await requestLlmJson({ systemPrompt, userPrompt, temperature, maxTokens });
-  const parsed = schema.safeParse(raw);
-  if (!parsed.success) {
-    const summary = parsed.error.issues
-      .map((issue) => {
-        const path = issue.path.length > 0 ? issue.path.join(".") : "root";
-        return `${path}: ${issue.message}`;
-      })
-      .slice(0, 4)
-      .join("; ");
-
-    throw withRawOutput(
-      new Error(`LLM response failed schema validation${summary ? ` (${summary})` : ""}`),
-      JSON.stringify(raw)
-    );
-  }
-
-  return parsed.data;
+  return schema.parse(raw);
 }
 
 module.exports = {

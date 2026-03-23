@@ -32,6 +32,12 @@ const attemptResponseSchema = z.object({
   timeSpentSec: z.number().min(0).optional()
 });
 
+const proctoringLogSchema = z.object({
+  type: z.string().trim().min(1),
+  timestamp: z.string().datetime().optional(),
+  details: z.record(z.any()).optional()
+});
+
 const saveExamSchema = z.object({
   attemptId: z.string().trim().min(1),
   responses: z.array(attemptResponseSchema).optional(),
@@ -41,7 +47,8 @@ const saveExamSchema = z.object({
 const submitExamSchema = z.object({
   attemptId: z.string().trim().min(1),
   responses: z.array(attemptResponseSchema).optional(),
-  elapsedSec: z.number().int().min(0).optional()
+  elapsedSec: z.number().int().min(0).optional(),
+  proctoringLogs: z.array(proctoringLogSchema).max(500).optional()
 });
 
 const resultParamsSchema = z.object({

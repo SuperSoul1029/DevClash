@@ -61,6 +61,25 @@ const topicBreakdownSchema = new mongoose.Schema(
   { _id: false }
 );
 
+const proctoringLogSchema = new mongoose.Schema(
+  {
+    type: {
+      type: String,
+      required: true,
+      trim: true
+    },
+    timestamp: {
+      type: Date,
+      default: Date.now
+    },
+    details: {
+      type: mongoose.Schema.Types.Mixed,
+      default: {}
+    }
+  },
+  { _id: false }
+);
+
 const examAttemptSchema = new mongoose.Schema(
   {
     userId: {
@@ -100,6 +119,10 @@ const examAttemptSchema = new mongoose.Schema(
     },
     responses: {
       type: [responseSchema],
+      default: []
+    },
+    proctoringLogs: {
+      type: [proctoringLogSchema],
       default: []
     },
     result: {

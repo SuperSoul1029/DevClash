@@ -59,6 +59,19 @@ beforeEach(async () => {
 });
 
 describe("Phase B4 API", () => {
+  test("tutor endpoint rejects invalid short question payload", async () => {
+    const response = await request(app)
+      .post("/api/tutor/query")
+      .set("Authorization", `Bearer ${authToken}`)
+      .send({
+        question: "abc"
+      });
+
+    expect(response.status).toBe(400);
+    expect(response.body.message).toBe("Validation failed");
+    expect(Array.isArray(response.body.details)).toBe(true);
+  });
+
   test("tutor endpoint returns grounded citations when context is found", async () => {
     const response = await request(app)
       .post("/api/tutor/query")
@@ -72,6 +85,26 @@ describe("Phase B4 API", () => {
     expect(response.status).toBe(200);
     expect(response.body.response.abstained).toBe(false);
     expect(response.body.response.citations.length).toBeGreaterThan(0);
+    expect(response.body.response.citations[0]).toHaveProperty("label");
+    expect(response.body.response.citations[0]).toHaveProperty("sourceType");
+    expect(response.body.response.confidence).toBeGreaterThanOrEqual(0);
+    expect(response.body.response.confidence).toBeLessThanOrEqual(1);
+  });
+
+  test("tutor endpoint abstains when query has no matching grounded context", async () => {
+    const response = await request(app)
+      .post("/api/tutor/query")
+      .set("Authorization", `Bearer ${authToken}`)
+      .send({
+        question: "Explain polymerase chain reaction denaturation annealing and extension details",
+        classLevel: "12",
+        subject: "Biology"
+      });
+
+    expect(response.status).toBe(200);
+    expect(response.body.response.abstained).toBe(true);
+    expect(response.body.response.citations).toEqual([]);
+    expect(response.body.response.confidence).toBeLessThan(0.5);
   });
 
   test("youtube explain flow completes async job and exposes result schema", async () => {

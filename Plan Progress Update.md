@@ -551,6 +551,48 @@
 - Maintain port 5000 as the standard backend entry to match current frontend proxy settings.
 - Ensure any future service additions (e.g., microservices) use the `env.js` port registry to avoid address collisions.
 
+## March 23, 2026 - Epic 1 Kickoff (AI Gaze Proctoring)
+
+### What Was Completed
+
+- Implemented Epic 1 initial proctoring flow in the test attempt workspace with strict activation scope: proctoring starts only during an active exam attempt.
+- Added explicit user permission gating before any camera-based gaze detection begins.
+- Kept gaze detection fully off-screen (no webcam preview or detection overlay rendered in UI).
+- Extended backend submission flow to accept and persist `proctoringLogs` into `ExamAttempt` records.
+
+### How It Was Done
+
+- Frontend (`TestCenterPage`) now:
+  - requests camera permission only after user clicks **Allow Camera Proctoring** during an active attempt,
+  - runs hidden, local detection with browser APIs (`getUserMedia` + `FaceDetector` when available),
+  - logs suspicious events like `look_away_over_3s` and `second_face_detected`,
+  - stops and cleans up streams/intervals when the attempt ends, changes, or page unmounts.
+- Frontend (`LearningContext`) now forwards `proctoringLogs` in `POST /api/tests/submit` payload.
+- Backend updates:
+  - `ExamAttempt` schema now includes `proctoringLogs`,
+  - submit validator accepts optional `proctoringLogs`,
+  - `submitExamAttempt` appends received proctoring evidence before finalizing submission.
+
+### Adjustments to Next Steps
+
+- Add richer on-device gaze orientation using a dedicated face landmarks model (MediaPipe/face-api) for stronger detection fidelity beyond fallback browser detector support.
+- Expand backend/API tests to assert proctoring log persistence on submit.
+- Decide policy behavior for denied camera permission during tests (allow with warning vs block submission/start).
+
+### March 23, 2026 - Epic 1 Update (Multiple Person Detection)
+
+- Improved multi-person detection reliability by adding a cross-browser fallback detector path.
+- `TestCenterPage` now uses native `FaceDetector` when available and automatically falls back to TensorFlow BlazeFace when not available.
+- Existing `second_face_detected` event logging now works across a wider set of browsers while keeping the same hidden-camera, permission-gated, test-only behavior.
+- Frontend dependencies updated: `@tensorflow/tfjs`, `@tensorflow-models/blazeface`.
+- Verification: `frontend` lint passes.
+
+### March 23, 2026 - Epic 1 Update (Live Popup Alert)
+
+- Added a live popup notification in test attempt flow when multiple faces are detected.
+- `TestCenterPage` now opens a modal titled **Multiple Face Detected** with detected face count and timestamp.
+- Popup remains scoped to active attempts only and keeps hidden-camera behavior unchanged.
+- Verification: `frontend` lint passes.
 ## March 22, 2026 - Epic 0 (Real Generative AI Core) Executed
 
 ### What Was Completed

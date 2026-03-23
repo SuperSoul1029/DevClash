@@ -1,3 +1,7 @@
+const { z } = require("zod");
+const { getStructuredLlmOutput } = require("./llmClient");
+const { logError, logInfo } = require("./logger");
+
 function extractVideoHandle(url) {
   try {
     const parsed = new URL(url);
@@ -7,7 +11,7 @@ function extractVideoHandle(url) {
   }
 }
 
-function buildFallbackPayload(videoHandle) {
+function buildFallbackPayload(videoHandle, reason) {
   return {
     overview:
       "The source transcript quality was low, so this summary uses reliable fallback guidance focused on revision strategy and core concept clarity.",
@@ -33,11 +37,12 @@ function buildFallbackPayload(videoHandle) {
     summary:
       "Fallback mode produced a study-ready abstraction because transcript confidence was insufficient for high-fidelity extraction.",
     transcriptQuality: "low",
+    fallbackReason: reason || "Transcript quality was too low for reliable extraction.",
     fallbackUsed: true
   };
 }
 
-function buildStandardPayload(videoHandle) {
+function buildStandardPayload(videoHandle, reason) {
   return {
     overview:
       "This lesson explains a core exam concept through intuition first, then applies it through worked scenarios and common pitfalls.",
@@ -62,24 +67,96 @@ function buildStandardPayload(videoHandle) {
     ],
     summary:
       "The video is best used as concept setup plus guided application, then reinforced using spaced short-form recall.",
-    transcriptQuality: "good",
-    fallbackUsed: false
+    transcriptQuality: "unknown",
+    fallbackReason: reason || "Live transcript extraction is not wired in this build; deterministic template output was used.",
+    fallbackUsed: true
   };
 }
 
-function generateYoutubeExplanation(url) {
+const youtubeExplainerSchema = z.object({
+  overview: z.string(),
+  bullets: z.array(z.string()),
+  keyConcepts: z.array(z.string()),
+  revisionCards: z.array(
+    z.object({
+      title: z.string(),
+      prompt: z.string(),
+      answer: z.string()
+    })
+  ),
+  summary: z.string()
+});
+
+async function generateYoutubeExplanation(url) {
   const videoHandle = extractVideoHandle(url);
   const normalized = String(url || "").toLowerCase();
 
+  // Fallback Situation 1: Emulating a transcript failure
   if (normalized.includes("force-error")) {
-    throw new Error("Transcript extraction failed for the source URL");
+    throw new Error("Transcript extraction failed for the source URL (forced error for debugging)");
   }
 
+  // Fallback Situation 2: Emulating a low-quality transcript
   if (normalized.includes("low-quality") || normalized.includes("fallback")) {
-    return buildFallbackPayload(videoHandle);
+    return buildFallbackPayload(videoHandle, "[DEBUG] Expected Fallback: URL triggered 'low-quality' or 'fallback' simulation.");
   }
 
-  return buildStandardPayload(videoHandle);
+  let transcriptFragments = [];
+  try {
+    const { YoutubeTranscript } = await import("youtube-transcript/dist/youtube-transcript.esm.js");
+    const rawTranscript = await YoutubeTranscript.fetchTranscript(url);
+    if (!rawTranscript || rawTranscript.length === 0) {
+      throw new Error("Transcript returned empty");
+    }
+    // Limit to the first ~400 fragments to avoid huge token limit issues for now
+    transcriptFragments = rawTranscript.slice(0, 400).map((t) => t.text);
+  } catch (error) {
+    logError("youtubeEngine.transcript_fetch_failed", { url, message: error.message });
+    return buildStandardPayload(
+      videoHandle,
+      `[DEBUG] Fetching real transcript failed: ${error.message}. Returning fallback.`
+    );
+  }
+
+  const transcriptText = transcriptFragments.join(" ");
+  if (transcriptText.length < 50) {
+    return buildFallbackPayload(videoHandle, "[DEBUG] Live transcript was too brief/low-quality for reliable extraction.");
+  }
+
+  const systemPrompt = `You are an expert learning assistant. Given a video transcript, you must extract its key concepts and create a study guide.
+Your output must be structured exactly as requested in JSON format.
+The output should contain:
+- overview: A 1-2 sentence plain-English summary.
+- bullets: 3-5 concise, detailed bullet points outlining the video content.
+- keyConcepts: 3-5 high-signal concept tags (short phrases).
+- revisionCards: 2-3 active recall cards with 'title', 'prompt' (a trigger question), and 'answer' (compact).
+- summary: A final 1 sentence conclusion on how best to use this material.`;
+  
+  const userPrompt = `Generate a study explainer based on the following YouTube transcript text:\n\n${transcriptText}`;
+
+  try {
+    logInfo("youtubeEngine.calling_llm", { videoHandle, maxTokensEstimate: transcriptText.length });
+    const aiResult = await getStructuredLlmOutput({
+      schema: youtubeExplainerSchema,
+      systemPrompt,
+      userPrompt,
+      temperature: 0.2,
+      maxTokens: 1600
+    });
+
+    return {
+      ...aiResult,
+      transcriptQuality: "high",
+      fallbackReason: null,
+      fallbackUsed: false
+    };
+  } catch (error) {
+    logError("youtubeEngine.llm_generation_failed", { videoHandle, message: error.message });
+    return buildStandardPayload(
+      videoHandle,
+      `[DEBUG] LLM generation from real transcript failed: ${error.message}. Returning fallback.`
+    );
+  }
 }
 
 module.exports = {

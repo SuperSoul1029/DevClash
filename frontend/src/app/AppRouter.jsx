@@ -6,6 +6,8 @@ import TopicTrackerPage from '../pages/TopicTrackerPage.jsx'
 import TestCenterPage from '../pages/TestCenterPage.jsx'
 import PracticePage from '../pages/PracticePage.jsx'
 import YouTubeExplainerPage from '../pages/YouTubeExplainerPage.jsx'
+import MindMapPage from '../pages/MindMapPage.jsx'
+import TutorChatPage from '../pages/TutorChatPage.jsx'
 import LoginPage from '../pages/LoginPage.jsx'
 import SignupPage from '../pages/SignupPage.jsx'
 import NotFoundPage from '../pages/NotFoundPage.jsx'
@@ -69,6 +71,8 @@ function AppRouter() {
         <Route path="/practice" element={<PracticePage />} />
         <Route path="/tests" element={<TestCenterPage />} />
         <Route path="/youtube" element={<YouTubeExplainerPage />} />
+        <Route path="/mindmap" element={<MindMapPage />} />
+        <Route path="/tutor" element={<TutorChatPage />} />
       </Route>
 
       <Route path="*" element={<NotFoundPage />} />

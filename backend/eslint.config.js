@@ -11,6 +11,7 @@ module.exports = [
         process: "readonly",
         console: "readonly",
         URL: "readonly",
+        fetch: "readonly",
         setTimeout: "readonly",
         module: "readonly",
         require: "readonly",
